@@ -69,7 +69,7 @@
     <section id="result" class="hidden space-y-4"></section>
 
     <footer class="text-center text-xs text-slate-400 pb-6">
-      날씨: <a class="underline" href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · AI: Google Gemini
+      날씨: <a class="underline" href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · 지역 검색: <a class="underline" href="https://photon.komoot.io/" target="_blank" rel="noopener">Photon</a> / © <a class="underline" href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> · AI: Google Gemini
     </footer>
   </main>
 
@@ -198,33 +198,80 @@ function geoCandidates(raw) {
 }
 
 // 큰 행정구역/도시일수록 높은 점수 (같은 이름의 작은 마을보다 우선)
-const FEATURE_RANK = { PPLC: 6, ADM1: 5, PPLA: 5, ADM2: 4, PPLA2: 4, PPLA3: 3, ADM3: 3, PPLX: 2, PPLA4: 2, ADM4: 1 };
+const RANK = {
+  // Open-Meteo(GeoNames) feature_code
+  PPLC: 6, ADM1: 5, PPLA: 5, ADM2: 4, PPLA2: 4, PPLA3: 3, ADM3: 3, PPLX: 2, PPLA4: 2, ADM4: 1,
+  // Photon(OpenStreetMap) osm_value / type
+  city: 6, county: 5, borough: 5, administrative: 5, town: 4, district: 4,
+  suburb: 3, quarter: 3, station: 3, neighbourhood: 2, locality: 2, village: 1,
+};
 const shortAdmin = (s = '') => s.replace(/(특별자치시|특별자치도|특별시|광역시|자치시|자치도|도)$/, '');
 
-function scorePlace(r, hints) {
-  const admins = [r.admin1, r.admin2, r.admin3].filter(Boolean).join(' ');
-  const hintMatch = hints.some(h => h.length >= 2 && (admins.includes(h) || admins.includes(shortAdmin(h))));
-  return (hintMatch ? 1e12 : 0) + (FEATURE_RANK[r.feature_code] || 0) * 1e9 + (r.population || 0);
+function scorePlace(p, query, hints) {
+  const hintMatch = hints.some(h => h.length >= 2 && (p.admins.includes(h) || p.admins.includes(shortAdmin(h))));
+  const base = query.replace(SUFFIX_RE, '');
+  const exact = p.name === query ? 2 : (p.name.replace(SUFFIX_RE, '') === base ? 1 : 0);
+  return (hintMatch ? 1e10 : 0) + p.rank * 1e8 + exact * 1e7 + (p.src === "osm" ? 5e6 : 0) + Math.min(p.population || 0, 4e6);
 }
 
-const placeLabel = (r) => [r.admin1, r.admin2, r.name].filter((v, i, a) => v && a.indexOf(v) === i).join(' ');
+const joinLabel = (parts) => parts.filter((v, i, a) => v && a.indexOf(v) === i).join(' ');
+
+// 1순위: Photon (OpenStreetMap, 한국 지명 한글 데이터가 풍부, 키 불필요)
+async function searchPhoton(q) {
+  const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10&bbox=124.5,33,131.9,38.7`;
+  const r = await fetch(url);
+  if (!r.ok) return [];
+  const d = await r.json();
+  return (d.features || [])
+    .filter(f => (f.properties?.countrycode || '').toUpperCase() === 'KR' && f.properties?.name)
+    .map(f => {
+      const pr = f.properties;
+      return {
+        src: 'osm', name: pr.name,
+        lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0],
+        admins: [pr.state, pr.city, pr.county, pr.district].filter(Boolean).join(' '),
+        label: joinLabel([pr.state, pr.city, pr.county, pr.name]),
+        rank: Math.max(RANK[pr.osm_value] || 0, RANK[pr.type] || 0),
+      };
+    });
+}
+
+// 2순위(예비): Open-Meteo Geocoding
+async function searchOpenMeteo(q) {
+  const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=10&language=ko&format=json`);
+  if (!r.ok) return [];
+  const d = await r.json();
+  return (d.results || []).filter(x => x.country_code === 'KR').map(x => ({
+    src: 'om', name: x.name, lat: x.latitude, lon: x.longitude, population: x.population,
+    admins: [x.admin1, x.admin2, x.admin3].filter(Boolean).join(' '),
+    label: joinLabel([x.admin1, x.admin2, x.name]),
+    rank: RANK[x.feature_code] || 0,
+  }));
+}
 
 async function searchPlaces(raw) {
   const { queries, hints } = geoCandidates(raw);
-  const responses = await Promise.all(queries.map(q =>
-    fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=10&language=ko&format=json`)
-      .then(r => (r.ok ? r.json() : { results: [] }))
-      .catch(() => null)
-  ));
-  if (responses.every(r => r === null)) throw new UserError('지역 검색 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.');
+  const query = raw.trim().split(/\s+/).pop(); // 마지막 단어 (예: "서울 노원구" → "노원구")
+  const jobs = [
+    searchPhoton(raw.trim()),
+    ...(raw.trim() !== query ? [searchPhoton(query)] : []),
+    ...queries.map(searchOpenMeteo),
+  ].map(p => p.catch(() => null));
+  const results = await Promise.all(jobs);
+  if (results.every(r => r === null)) throw new UserError('지역 검색 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.');
 
-  const byId = new Map();
-  responses.forEach(d => (d?.results || []).forEach(r => { if (r.country_code === 'KR') byId.set(r.id, r); }));
-  const ranked = [...byId.values()].sort((x, y) => scorePlace(y, hints) - scorePlace(x, hints));
-  const seen = new Set();
-  return ranked
-    .map(r => ({ lat: r.latitude, lon: r.longitude, name: r.name, label: placeLabel(r) }))
-    .filter(l => !seen.has(l.label) && seen.add(l.label)); // 같은 이름 중복 제거
+  const all = results.flatMap(r => r || []);
+  all.forEach(p => { p.score = scorePlace(p, query, hints); });
+  all.sort((x, y) => y.score - x.score);
+
+  // 같은 곳 중복 제거 (같은 이름 + 좌표 2km 이내 또는 같은 표시명)
+  const out = [];
+  for (const p of all) {
+    const dup = out.some(o => o.label === p.label ||
+      (o.name.replace(SUFFIX_RE, '') === p.name.replace(SUFFIX_RE, '') && Math.abs(o.lat - p.lat) < 0.02 && Math.abs(o.lon - p.lon) < 0.02));
+    if (!dup) out.push({ lat: p.lat, lon: p.lon, name: p.name, label: p.label });
+  }
+  return out;
 }
 
 async function geocode(raw) {
