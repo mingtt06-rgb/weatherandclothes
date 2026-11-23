@@ -1,7 +1,8 @@
 // Vercel 서버리스 함수: Gemini API 키를 숨긴 채 대신 호출해 줍니다.
 // Vercel 프로젝트 Settings → Environment Variables 에 GEMINI_API_KEY 를 등록하세요.
 
-const MODEL = 'gemini-2.5-flash';
+// 모델 변경이 필요하면 Vercel 환경변수 GEMINI_MODEL 로 바꿀 수 있어요 (코드 수정 불필요)
+const DEFAULT_MODEL = 'gemini-3.5-flash';
 const MAX_BODY = 20000; // 요청 크기 제한 (남용 방지)
 
 module.exports = async (req, res) => {
@@ -33,7 +34,7 @@ module.exports = async (req, res) => {
 
   try {
     const r = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`,
+      `https://generativelanguage.googleapis.com/v1beta/models/${process.env.GEMINI_MODEL || DEFAULT_MODEL}:generateContent`,
       {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
