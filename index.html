@@ -149,22 +149,25 @@ function refreshGroup(box, key, multi) {
 /* =========================
    최근 동네
 ========================= */
-function getRecent() { try { return JSON.parse(ls.get(LS_RECENT)) || []; } catch { return []; } }
-function pushRecent(name) {
-  const list = [name, ...getRecent().filter(x => x !== name)].slice(0, 3);
+function getRecent() {
+  try { return (JSON.parse(ls.get(LS_RECENT)) || []).filter(x => x && typeof x === 'object' && x.label); } catch { return []; }
+}
+function pushRecent(loc) {
+  const item = { label: loc.label, name: loc.name, lat: loc.lat, lon: loc.lon };
+  const list = [item, ...getRecent().filter(x => x.label !== item.label)].slice(0, 3);
   ls.set(LS_RECENT, JSON.stringify(list)); renderRecent();
 }
 function renderRecent() {
   const box = $('recentLocs'); box.innerHTML = '';
-  getRecent().forEach(n => {
+  getRecent().forEach(loc => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = 'text-xs bg-slate-100 hover:bg-indigo-50 text-slate-600 rounded-full px-3 py-1 flex items-center gap-1';
-    b.innerHTML = `<i data-lucide="history" class="w-3 h-3"></i>${esc(n)}`;
-    b.addEventListener('click', () => { $('locInput').value = n; setPicked(null); hideError(); });
+    b.innerHTML = `<i data-lucide="history" class="w-3 h-3"></i>${esc(loc.label)}`;
+    b.addEventListener('click', () => { $('locInput').value = loc.label; setPicked(loc); hideSuggest(); hideError(); });
     box.appendChild(b);
   });
-  lucide.createIcons();
+  window.lucide?.createIcons();
 }
 
 /* =========================
@@ -185,100 +188,363 @@ function setLoading(text) {
    Step 1. Geocoding
 ========================= */
 const SUFFIX_RE = /(역|동|구|시|군|읍|면)$/;
-
-function geoCandidates(raw) {
-  const q = raw.trim().replace(/\s+/g, ' ');
-  const tokens = q.split(' ');
-  const last = tokens[tokens.length - 1];
-  const set = new Set([q, last]);                                   // "서울 노원구" → "노원구"
-  if (!SUFFIX_RE.test(last)) { set.add(last + '구'); set.add(last + '시'); } // "노원" → "노원구", "노원시"
-  const stripped = last.replace(SUFFIX_RE, '');
-  if (stripped.length >= 2 && stripped !== last) set.add(stripped);  // "강남역" → "강남"
-  return { queries: [...set], hints: tokens.slice(0, -1) };          // hints: "서울" 같은 상위 지역명
-}
-
-// 큰 행정구역/도시일수록 높은 점수 (같은 이름의 작은 마을보다 우선)
-const RANK = {
-  // Open-Meteo(GeoNames) feature_code
-  PPLC: 6, ADM1: 5, PPLA: 5, ADM2: 4, PPLA2: 4, PPLA3: 3, ADM3: 3, PPLX: 2, PPLA4: 2, ADM4: 1,
-  // Photon(OpenStreetMap) osm_value / type
-  city: 6, county: 5, borough: 5, administrative: 5, town: 4, district: 4,
-  suburb: 3, quarter: 3, station: 3, neighbourhood: 2, locality: 2, village: 1,
-};
-const shortAdmin = (s = '') => s.replace(/(특별자치시|특별자치도|특별시|광역시|자치시|자치도|도)$/, '');
-
-function scorePlace(p, query, hints) {
-  const hintMatch = hints.some(h => h.length >= 2 && (p.admins.includes(h) || p.admins.includes(shortAdmin(h))));
-  const base = query.replace(SUFFIX_RE, '');
-  const exact = p.name === query ? 2 : (p.name.replace(SUFFIX_RE, '') === base ? 1 : 0);
-  return (hintMatch ? 1e10 : 0) + p.rank * 1e8 + exact * 1e7 + (p.src === "osm" ? 5e6 : 0) + Math.min(p.population || 0, 4e6);
-}
-
 const joinLabel = (parts) => parts.filter((v, i, a) => v && a.indexOf(v) === i).join(' ');
+const shortAdmin = (s = '') => s.replace(/(특별자치시|특별자치도|특별시|광역시)$/, '');
+const STATE_SHORT = {
+  '서울특별시': '서울', '부산광역시': '부산', '대구광역시': '대구', '인천광역시': '인천', '광주광역시': '광주',
+  '대전광역시': '대전', '울산광역시': '울산', '세종특별자치시': '세종', '경기도': '경기', '강원특별자치도': '강원',
+  '충청북도': '충북', '충청남도': '충남', '전북특별자치도': '전북', '전라남도': '전남', '경상북도': '경북',
+  '경상남도': '경남', '제주특별자치도': '제주',
+};
 
-// 1순위: Photon (OpenStreetMap, 한국 지명 한글 데이터가 풍부, 키 불필요)
-async function searchPhoton(q) {
-  const url = `https://photon.komoot.io/api/?q=${encodeURIComponent(q)}&limit=10&bbox=124.5,33,131.9,38.7`;
-  const r = await fetch(url);
-  if (!r.ok) return [];
-  const d = await r.json();
-  return (d.features || [])
-    .filter(f => (f.properties?.countrycode || '').toUpperCase() === 'KR' && f.properties?.name)
-    .map(f => {
-      const pr = f.properties;
-      return {
-        src: 'osm', name: pr.name,
-        lat: f.geometry.coordinates[1], lon: f.geometry.coordinates[0],
-        admins: [pr.state, pr.city, pr.county, pr.district].filter(Boolean).join(' '),
-        label: joinLabel([pr.state, pr.city, pr.county, pr.name]),
-        rank: Math.max(RANK[pr.osm_value] || 0, RANK[pr.type] || 0),
-      };
-    });
+/* ---- 1순위: 앱에 내장된 전국 시·군·구 목록 (외부 서버 없이 즉시·확실하게 검색) ---- */
+const REGIONS_RAW = `서울특별시||서울특별시|37.5665|126.9780
+서울특별시||종로구|37.5735|126.9790
+서울특별시||중구|37.5641|126.9979
+서울특별시||용산구|37.5324|126.9906
+서울특별시||성동구|37.5634|127.0369
+서울특별시||광진구|37.5385|127.0823
+서울특별시||동대문구|37.5744|127.0396
+서울특별시||중랑구|37.6063|127.0927
+서울특별시||성북구|37.5894|127.0167
+서울특별시||강북구|37.6396|127.0257
+서울특별시||도봉구|37.6688|127.0471
+서울특별시||노원구|37.6542|127.0568
+서울특별시||은평구|37.6027|126.9291
+서울특별시||서대문구|37.5791|126.9368
+서울특별시||마포구|37.5663|126.9019
+서울특별시||양천구|37.5170|126.8664
+서울특별시||강서구|37.5509|126.8495
+서울특별시||구로구|37.4954|126.8874
+서울특별시||금천구|37.4569|126.8955
+서울특별시||영등포구|37.5264|126.8962
+서울특별시||동작구|37.5124|126.9393
+서울특별시||관악구|37.4784|126.9516
+서울특별시||서초구|37.4837|127.0324
+서울특별시||강남구|37.5172|127.0473
+서울특별시||송파구|37.5145|127.1059
+서울특별시||강동구|37.5301|127.1238
+부산광역시||부산광역시|35.1796|129.0756
+부산광역시||중구|35.1063|129.0323
+부산광역시||서구|35.0979|129.0243
+부산광역시||동구|35.1293|129.0454
+부산광역시||영도구|35.0911|129.0679
+부산광역시||부산진구|35.1630|129.0532
+부산광역시||동래구|35.2049|129.0837
+부산광역시||남구|35.1365|129.0843
+부산광역시||북구|35.1972|128.9903
+부산광역시||해운대구|35.1631|129.1636
+부산광역시||사하구|35.1046|128.9748
+부산광역시||금정구|35.2430|129.0922
+부산광역시||강서구|35.2122|128.9806
+부산광역시||연제구|35.1762|129.0799
+부산광역시||수영구|35.1455|129.1131
+부산광역시||사상구|35.1526|128.9910
+부산광역시||기장군|35.2445|129.2222
+대구광역시||대구광역시|35.8714|128.6014
+대구광역시||중구|35.8694|128.6062
+대구광역시||동구|35.8865|128.6355
+대구광역시||서구|35.8718|128.5592
+대구광역시||남구|35.8460|128.5974
+대구광역시||북구|35.8858|128.5828
+대구광역시||수성구|35.8581|128.6309
+대구광역시||달서구|35.8298|128.5326
+대구광역시||달성군|35.7746|128.4314
+대구광역시||군위군|36.2428|128.5728
+인천광역시||인천광역시|37.4563|126.7052
+인천광역시||중구|37.4738|126.6216
+인천광역시||동구|37.4738|126.6432
+인천광역시||미추홀구|37.4635|126.6503
+인천광역시||연수구|37.4101|126.6783
+인천광역시||남동구|37.4470|126.7314
+인천광역시||부평구|37.5070|126.7219
+인천광역시||계양구|37.5372|126.7377
+인천광역시||서구|37.5455|126.6760
+인천광역시||강화군|37.7466|126.4880
+인천광역시||옹진군|37.2363|126.4706
+광주광역시||광주광역시|35.1595|126.8526
+광주광역시||동구|35.1460|126.9233
+광주광역시||서구|35.1520|126.8899
+광주광역시||남구|35.1330|126.9026
+광주광역시||북구|35.1741|126.9120
+광주광역시||광산구|35.1395|126.7937
+대전광역시||대전광역시|36.3504|127.3845
+대전광역시||동구|36.3120|127.4548
+대전광역시||중구|36.3255|127.4214
+대전광역시||서구|36.3555|127.3838
+대전광역시||유성구|36.3623|127.3562
+대전광역시||대덕구|36.3466|127.4156
+울산광역시||울산광역시|35.5384|129.3114
+울산광역시||중구|35.5693|129.3328
+울산광역시||남구|35.5439|129.3301
+울산광역시||동구|35.5050|129.4166
+울산광역시||북구|35.5828|129.3613
+울산광역시||울주군|35.5222|129.2424
+세종특별자치시||세종특별자치시|36.4800|127.2890
+경기도||수원시|37.2636|127.0286
+경기도|수원시|장안구|37.3040|127.0102
+경기도|수원시|권선구|37.2575|126.9718
+경기도|수원시|팔달구|37.2827|127.0198
+경기도|수원시|영통구|37.2596|127.0465
+경기도||성남시|37.4200|127.1265
+경기도|성남시|수정구|37.4504|127.1456
+경기도|성남시|중원구|37.4305|127.1372
+경기도|성남시|분당구|37.3826|127.1189
+경기도||의정부시|37.7381|127.0337
+경기도||안양시|37.3943|126.9568
+경기도|안양시|만안구|37.3866|126.9324
+경기도|안양시|동안구|37.3925|126.9516
+경기도||부천시|37.5034|126.7660
+경기도||광명시|37.4786|126.8646
+경기도||평택시|36.9921|127.1129
+경기도||동두천시|37.9036|127.0606
+경기도||안산시|37.3219|126.8309
+경기도|안산시|상록구|37.3009|126.8466
+경기도|안산시|단원구|37.3197|126.8114
+경기도||고양시|37.6584|126.8320
+경기도|고양시|덕양구|37.6375|126.8320
+경기도|고양시|일산동구|37.6585|126.7750
+경기도|고양시|일산서구|37.6752|126.7506
+경기도||과천시|37.4292|126.9876
+경기도||구리시|37.5943|127.1296
+경기도||남양주시|37.6360|127.2165
+경기도||오산시|37.1498|127.0772
+경기도||시흥시|37.3800|126.8029
+경기도||군포시|37.3617|126.9352
+경기도||의왕시|37.3448|126.9683
+경기도||하남시|37.5393|127.2149
+경기도||용인시|37.2411|127.1776
+경기도|용인시|처인구|37.2342|127.2017
+경기도|용인시|기흥구|37.2804|127.1147
+경기도|용인시|수지구|37.3221|127.0975
+경기도||파주시|37.7600|126.7800
+경기도||이천시|37.2720|127.4350
+경기도||안성시|37.0080|127.2797
+경기도||김포시|37.6153|126.7156
+경기도||화성시|37.1995|126.8312
+경기도||광주시|37.4295|127.2550
+경기도||양주시|37.7853|127.0458
+경기도||포천시|37.8949|127.2003
+경기도||여주시|37.2983|127.6370
+경기도||연천군|38.0966|127.0748
+경기도||가평군|37.8315|127.5105
+경기도||양평군|37.4917|127.4875
+강원특별자치도||춘천시|37.8813|127.7298
+강원특별자치도||원주시|37.3422|127.9202
+강원특별자치도||강릉시|37.7519|128.8761
+강원특별자치도||동해시|37.5247|129.1143
+강원특별자치도||태백시|37.1641|128.9856
+강원특별자치도||속초시|38.2070|128.5918
+강원특별자치도||삼척시|37.4499|129.1652
+강원특별자치도||홍천군|37.6970|127.8888
+강원특별자치도||횡성군|37.4917|127.9850
+강원특별자치도||영월군|37.1836|128.4617
+강원특별자치도||평창군|37.3707|128.3903
+강원특별자치도||정선군|37.3807|128.6608
+강원특별자치도||철원군|38.1467|127.3133
+강원특별자치도||화천군|38.1062|127.7082
+강원특별자치도||양구군|38.1100|127.9897
+강원특별자치도||인제군|38.0697|128.1707
+강원특별자치도||고성군|38.3807|128.4677
+강원특별자치도||양양군|38.0754|128.6191
+충청북도||청주시|36.6424|127.4890
+충청북도|청주시|상당구|36.5896|127.5051
+충청북도|청주시|서원구|36.6375|127.4697
+충청북도|청주시|흥덕구|36.6268|127.4290
+충청북도|청주시|청원구|36.6514|127.4865
+충청북도||충주시|36.9910|127.9260
+충청북도||제천시|37.1326|128.1910
+충청북도||보은군|36.4895|127.7295
+충청북도||옥천군|36.3064|127.5713
+충청북도||영동군|36.1750|127.7834
+충청북도||증평군|36.7853|127.5814
+충청북도||진천군|36.8554|127.4356
+충청북도||괴산군|36.8154|127.7867
+충청북도||음성군|36.9402|127.6905
+충청북도||단양군|36.9845|128.3655
+충청남도||천안시|36.8151|127.1139
+충청남도|천안시|동남구|36.8066|127.1522
+충청남도|천안시|서북구|36.8780|127.1446
+충청남도||공주시|36.4465|127.1190
+충청남도||보령시|36.3335|126.6129
+충청남도||아산시|36.7898|127.0018
+충청남도||서산시|36.7848|126.4503
+충청남도||논산시|36.1872|127.0987
+충청남도||계룡시|36.2745|127.2489
+충청남도||당진시|36.8898|126.6459
+충청남도||금산군|36.1088|127.4880
+충청남도||부여군|36.2756|126.9098
+충청남도||서천군|36.0803|126.6919
+충청남도||청양군|36.4592|126.8023
+충청남도||홍성군|36.6012|126.6608
+충청남도||예산군|36.6826|126.8449
+충청남도||태안군|36.7456|126.2980
+전북특별자치도||전주시|35.8242|127.1480
+전북특별자치도|전주시|완산구|35.8121|127.1198
+전북특별자치도|전주시|덕진구|35.8295|127.1340
+전북특별자치도||군산시|35.9676|126.7366
+전북특별자치도||익산시|35.9483|126.9577
+전북특별자치도||정읍시|35.5699|126.8559
+전북특별자치도||남원시|35.4164|127.3904
+전북특별자치도||김제시|35.8036|126.8809
+전북특별자치도||완주군|35.9046|127.1622
+전북특별자치도||진안군|35.7917|127.4249
+전북특별자치도||무주군|36.0068|127.6608
+전북특별자치도||장수군|35.6474|127.5212
+전북특별자치도||임실군|35.6178|127.2890
+전북특별자치도||순창군|35.3744|127.1374
+전북특별자치도||고창군|35.4358|126.7020
+전북특별자치도||부안군|35.7318|126.7334
+전라남도||목포시|34.8118|126.3922
+전라남도||여수시|34.7604|127.6622
+전라남도||순천시|34.9507|127.4872
+전라남도||나주시|35.0160|126.7108
+전라남도||광양시|34.9407|127.6959
+전라남도||담양군|35.3212|126.9881
+전라남도||곡성군|35.2820|127.2920
+전라남도||구례군|35.2025|127.4627
+전라남도||고흥군|34.6112|127.2851
+전라남도||보성군|34.7714|127.0800
+전라남도||화순군|35.0646|126.9866
+전라남도||장흥군|34.6816|126.9069
+전라남도||강진군|34.6420|126.7672
+전라남도||해남군|34.5733|126.5992
+전라남도||영암군|34.8001|126.6968
+전라남도||무안군|34.9904|126.4817
+전라남도||함평군|35.0660|126.5165
+전라남도||영광군|35.2772|126.5120
+전라남도||장성군|35.3018|126.7848
+전라남도||완도군|34.3110|126.7550
+전라남도||진도군|34.4868|126.2635
+전라남도||신안군|34.8335|126.3517
+경상북도||포항시|36.0190|129.3435
+경상북도|포항시|남구|36.0081|129.3595
+경상북도|포항시|북구|36.0418|129.3659
+경상북도||경주시|35.8562|129.2247
+경상북도||김천시|36.1398|128.1136
+경상북도||안동시|36.5684|128.7294
+경상북도||구미시|36.1195|128.3446
+경상북도||영주시|36.8057|128.6241
+경상북도||영천시|35.9733|128.9386
+경상북도||상주시|36.4109|128.1590
+경상북도||문경시|36.5865|128.1867
+경상북도||경산시|35.8251|128.7411
+경상북도||의성군|36.3527|128.6970
+경상북도||청송군|36.4360|129.0572
+경상북도||영양군|36.6667|129.1124
+경상북도||영덕군|36.4150|129.3654
+경상북도||청도군|35.6474|128.7340
+경상북도||고령군|35.7274|128.2629
+경상북도||성주군|35.9192|128.2829
+경상북도||칠곡군|35.9956|128.4017
+경상북도||예천군|36.6577|128.4529
+경상북도||봉화군|36.8932|128.7325
+경상북도||울진군|36.9930|129.4004
+경상북도||울릉군|37.4844|130.9058
+경상남도||창원시|35.2280|128.6811
+경상남도|창원시|의창구|35.2540|128.6400
+경상남도|창원시|성산구|35.1985|128.7029
+경상남도|창원시|마산합포구|35.1968|128.5677
+경상남도|창원시|마산회원구|35.2209|128.5797
+경상남도|창원시|진해구|35.1332|128.7100
+경상남도||진주시|35.1800|128.1076
+경상남도||통영시|34.8544|128.4332
+경상남도||사천시|35.0035|128.0642
+경상남도||김해시|35.2285|128.8894
+경상남도||밀양시|35.5038|128.7467
+경상남도||거제시|34.8806|128.6211
+경상남도||양산시|35.3350|129.0373
+경상남도||의령군|35.3222|128.2617
+경상남도||함안군|35.2725|128.4065
+경상남도||창녕군|35.5446|128.4924
+경상남도||고성군|34.9730|128.3222
+경상남도||남해군|34.8377|127.8926
+경상남도||하동군|35.0674|127.7513
+경상남도||산청군|35.4155|127.8734
+경상남도||함양군|35.5205|127.7251
+경상남도||거창군|35.6866|127.9095
+경상남도||합천군|35.5666|128.1658
+제주특별자치도||제주시|33.4996|126.5312
+제주특별자치도||서귀포시|33.2541|126.5600`;
+const REGIONS = REGIONS_RAW.split('\n').map((line, i) => {
+  const [state, city, name, lat, lon] = line.split('|');
+  const base = (n) => shortAdmin(n).replace(SUFFIX_RE, '');
+  return {
+    order: i, state, city, name, lat: +lat, lon: +lon,
+    label: joinLabel([state, city, name]),
+    keysName: [name, shortAdmin(name), base(name)],
+    keysParent: [state, STATE_SHORT[state], state.replace(/(도|특별자치도)$/, ''), city, city && base(city)].filter(Boolean),
+  };
+});
+
+function searchLocal(raw) {
+  const tokens = raw.trim().split(/\s+/).filter(Boolean);
+  if (!tokens.length) return [];
+  const target = tokens[tokens.length - 1];
+  const tBase = shortAdmin(target).replace(SUFFIX_RE, '') || target;
+  const hints = tokens.slice(0, -1).map(h => shortAdmin(h).replace(/(도|시|군)$/, '') || h);
+
+  const scored = [];
+  for (const r of REGIONS) {
+    let score = 0;
+    if (r.keysName.includes(target) || r.keysName.includes(tBase)) score = 3;            // 노원 / 노원구
+    else if (r.keysName.some(k => k.startsWith(tBase))) score = 2;                       // 노 → 노원구 (입력 중)
+    else if (r.keysParent.slice(3).some(k => k === tBase || k === target)) score = 1;   // 수원 → 수원시 영통구 등
+    if (!score) continue;
+    if (hints.length) {
+      const ok = hints.every(h => r.keysParent.some(k => k.startsWith(h)) || r.keysName.some(k => k.startsWith(h)));
+      if (!ok) continue;                                                                 // "서울 중구"면 서울만
+      score += 1;
+    }
+    scored.push({ r, score });
+  }
+  scored.sort((x, y) => y.score - x.score || x.r.order - y.r.order);
+  return scored.map(({ r }) => ({ lat: r.lat, lon: r.lon, name: r.name, label: r.label, src: 'local' }));
 }
 
-// 2순위(예비): Open-Meteo Geocoding
-async function searchOpenMeteo(q) {
+/* ---- 2순위: 동·역·장소 → Vercel 서버(api/geocode.js) → OpenStreetMap Nominatim ---- */
+async function searchRemote(raw) {
+  const r = await fetch(`/api/geocode?q=${encodeURIComponent(raw.trim())}`);
+  if (!r.ok) throw new Error('geocode ' + r.status);
+  const d = await r.json();
+  return (d.results || []).map(x => ({ ...x, src: 'osm' }));
+}
+
+/* ---- 3순위(예비): Open-Meteo Geocoding ---- */
+async function searchOpenMeteo(raw) {
+  const q = raw.trim().split(/\s+/).pop();
   const r = await fetch(`https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=10&language=ko&format=json`);
   if (!r.ok) return [];
   const d = await r.json();
-  return (d.results || []).filter(x => x.country_code === 'KR').map(x => ({
-    src: 'om', name: x.name, lat: x.latitude, lon: x.longitude, population: x.population,
-    admins: [x.admin1, x.admin2, x.admin3].filter(Boolean).join(' '),
-    label: joinLabel([x.admin1, x.admin2, x.name]),
-    rank: RANK[x.feature_code] || 0,
-  }));
+  return (d.results || []).filter(x => x.country_code === 'KR')
+    .map(x => ({ lat: x.latitude, lon: x.longitude, name: x.name, label: joinLabel([x.admin1, x.admin2, x.name]), src: 'om' }));
 }
 
-async function searchPlaces(raw) {
-  const { queries, hints } = geoCandidates(raw);
-  const query = raw.trim().split(/\s+/).pop(); // 마지막 단어 (예: "서울 노원구" → "노원구")
-  const jobs = [
-    searchPhoton(raw.trim()),
-    ...(raw.trim() !== query ? [searchPhoton(query)] : []),
-    ...queries.map(searchOpenMeteo),
-  ].map(p => p.catch(() => null));
-  const results = await Promise.all(jobs);
-  if (results.every(r => r === null)) throw new UserError('지역 검색 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.');
-
-  const all = results.flatMap(r => r || []);
-  all.forEach(p => { p.score = scorePlace(p, query, hints); });
-  all.sort((x, y) => y.score - x.score);
-
-  // 같은 곳 중복 제거 (같은 이름 + 좌표 2km 이내 또는 같은 표시명)
+function dedupe(list) {
   const out = [];
-  for (const p of all) {
-    const dup = out.some(o => o.label === p.label ||
-      (o.name.replace(SUFFIX_RE, '') === p.name.replace(SUFFIX_RE, '') && Math.abs(o.lat - p.lat) < 0.02 && Math.abs(o.lon - p.lon) < 0.02));
-    if (!dup) out.push({ lat: p.lat, lon: p.lon, name: p.name, label: p.label });
+  for (const p of list) {
+    if (!out.some(o => o.label === p.label || (Math.abs(o.lat - p.lat) < 0.01 && Math.abs(o.lon - p.lon) < 0.01))) out.push(p);
   }
   return out;
 }
 
+// remote=false: 내장 목록만 (입력 중 자동완성용, 즉시)
+async function searchPlaces(raw, { remote = true } = {}) {
+  const local = searchLocal(raw);
+  if (!remote) return local;
+  let more = [];
+  try { more = await searchRemote(raw); } catch { /* 서버 검색 실패 시 아래 예비 검색 */ }
+  if (!more.length && !local.length) { try { more = await searchOpenMeteo(raw); } catch {} }
+  const placeLike = /(역|동|읍|면|리)$/.test(raw.trim().split(/\s+/).pop());
+  return dedupe(placeLike ? [...more, ...local] : [...local, ...more]);
+}
+
 async function geocode(raw) {
-  const list = await searchPlaces(raw);
-  if (!list.length) throw new UserError("동네 이름 대신 '구' 또는 '시' 단위로 입력해 주세요 (예: 서울 노원구)");
+  // 내장 목록에 정확히 있으면 서버에 묻지 않고 바로 사용
+  const list = needsRemote(raw) ? await searchPlaces(raw) : searchLocal(raw);
+  if (!list.length) throw new UserError("지역을 찾지 못했어요. '구'나 '시' 단위로 입력해 보세요 (예: 서울 노원구)");
   const best = list[0];
-  best.alternatives = list.slice(1, 4); // 결과 화면의 "다른 곳이에요?" 후보
+  best.alternatives = list.slice(1, 4);
   return best;
 }
 
@@ -295,9 +561,11 @@ function setPicked(loc) {
   $('locPicked').classList.toggle('hidden', !loc);
 }
 
-function renderSuggest(list) {
+function renderSuggest(list, message) {
   const ul = $('locSuggest');
-  if (!list.length) {
+  if (message) {
+    ul.innerHTML = `<li class="px-3 py-2 text-sm text-slate-400">${esc(message)}</li>`;
+  } else if (!list.length) {
     ul.innerHTML = `<li class="px-3 py-2 text-sm text-slate-400">검색 결과가 없어요. '구'나 '시'까지 입력해 보세요.</li>`;
   } else {
     ul.innerHTML = list.slice(0, 6).map((l, i) =>
@@ -312,22 +580,34 @@ function renderSuggest(list) {
     }));
   }
   ul.classList.remove('hidden');
-  lucide.createIcons();
+  window.lucide?.createIcons();
 }
+
+const needsRemote = (q) => !searchLocal(q).length || /(역|동|읍|면|리)$/.test(q.split(/\s+/).pop());
 
 $('locInput').addEventListener('input', () => {
   setPicked(null);
   hideError();
   clearTimeout(suggestTimer);
   const q = $('locInput').value.trim();
-  if (q.length < 2) { hideSuggest(); return; }
-  suggestTimer = setTimeout(async () => {
-    const seq = ++suggestSeq;
+  const seq = ++suggestSeq;
+  if (!q) { hideSuggest(); return; }
+
+  const local = searchLocal(q).slice(0, 6);
+  if (local.length) renderSuggest(local);                    // 시·군·구는 즉시 표시
+  if (q.length < 2 || !needsRemote(q)) { if (!local.length) hideSuggest(); return; }
+
+  if (!local.length) renderSuggest(null, '찾는 중...');
+  suggestTimer = setTimeout(async () => {                    // 동·역·장소는 입력을 멈추면 서버 검색
     try {
-      const list = await searchPlaces(q);
-      if (seq === suggestSeq && $('locInput').value.trim() === q) renderSuggest(list);
-    } catch { /* 자동완성 실패는 조용히 무시 (추천 버튼 누르면 다시 검색) */ }
-  }, 350);
+      const remote = await searchRemote(q);
+      const placeLike = /(역|동|읍|면|리)$/.test(q.split(/\s+/).pop());
+      const list = dedupe(placeLike ? [...remote, ...local] : [...local, ...remote]);
+      if (seq === suggestSeq) renderSuggest(list);
+    } catch {
+      if (seq === suggestSeq && !local.length) renderSuggest([]);
+    }
+  }, 700);
 });
 $('locInput').addEventListener('blur', () => setTimeout(hideSuggest, 150));
 $('locInput').addEventListener('keydown', e => { if (e.key === 'Escape') hideSuggest(); });
@@ -566,7 +846,7 @@ function renderResult(loc, ws, ai) {
     setPicked(alt);
     $('submitBtn').click();
   }));
-  lucide.createIcons();
+  window.lucide?.createIcons();
   $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -595,7 +875,7 @@ $('submitBtn').addEventListener('click', async () => {
     const loc = (pickedLoc && pickedLoc.label === locRaw) ? pickedLoc : await geocode(locRaw);
     const weather = await fetchWeather(loc.lat, loc.lon);
     const ws = buildWeatherSummary(weather);
-    pushRecent(loc.label);
+    pushRecent(loc);
 
     setLoading('어제 옷차림과 비교하여 코디를 짜는 중...');
     const t0 = Date.now();
@@ -641,7 +921,7 @@ buildGroup('grpOuter', 'outer', false);
 buildGroup('grpBottom', 'bottom', false);
 buildGroup('grpFeel', 'feel', false, false);
 renderRecent();
-lucide.createIcons();
+window.lucide?.createIcons();
 </script>
 </body>
 </html>
