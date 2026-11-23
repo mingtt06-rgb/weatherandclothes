@@ -1,45 +1,42 @@
 # 👕 어제 체감 기반 오늘의 OOTD 추천기
 
-어제 입은 옷과 체감(추움/적당/더움), 오늘 방문할 동네의 날씨를 비교해 오늘 입을 상의·외투·하의를 추천하는 웹앱입니다.
+방문자는 키 입력 없이 바로 쓰고, AI 호출은 관리자(나)의 Gemini 키 하나로 처리됩니다.
+키는 Vercel 환경변수에만 저장되어 사이트 소스에는 노출되지 않습니다.
 
-- 날씨: [Open-Meteo](https://open-meteo.com/) (키 불필요)
-- AI: Google Gemini API `gemini-2.5-flash` (사용자 본인 키, 브라우저 localStorage에만 저장)
-- 구성: `index.html` 단일 파일 (Tailwind CDN, Lucide CDN, Vanilla JS)
+```
+방문자 브라우저 → index.html ─→ /api/gemini (Vercel 서버, 키 보관) → Gemini API
+                            └→ Open-Meteo (날씨, 키 불필요)
+```
 
-## GitHub Pages로 배포하기
+## 파일 구조
 
-1. GitHub에서 새 저장소를 만듭니다 (예: `ootd`). Public으로 만드세요.
-2. 이 폴더의 `index.html`, `README.md`를 저장소에 올립니다.
-   - 웹에서: **Add file → Upload files**로 드래그 후 Commit
-   - 터미널에서:
-     ```bash
-     git init
-     git add index.html README.md
-     git commit -m "OOTD 추천기 첫 배포"
-     git branch -M main
-     git remote add origin https://github.com/<내아이디>/ootd.git
-     git push -u origin main
-     ```
-3. 저장소 **Settings → Pages → Build and deployment**에서
-   Source: `Deploy from a branch`, Branch: `main` / `/ (root)` 선택 후 Save.
-4. 1~2분 뒤 `https://<내아이디>.github.io/ootd/` 에서 열립니다.
+```
+index.html      ← 앱 화면
+api/gemini.js   ← 키를 숨기는 서버 함수 (반드시 api 폴더 안에)
+README.md
+```
 
-## Gemini API 키
+## 설정 순서 (모두 웹에서, 터미널 필요 없음)
 
-1. [Google AI Studio](https://aistudio.google.com/apikey)에서 키를 발급받습니다.
-2. 배포된 페이지 상단 **Gemini API 키** 칸에 붙여넣고 [저장]을 누릅니다.
+### 1. GitHub에 올리기
+1. GitHub에서 새 저장소 생성 (Public/Private 모두 가능)
+2. **Add file → Upload files**로 `index.html`, `README.md` 업로드 → Commit
+3. **Add file → Create new file** → 파일 이름 칸에 `api/gemini.js` 입력
+   (`/`를 치면 api 폴더가 자동으로 만들어져요) → `gemini.js` 내용 붙여넣기 → Commit
 
-> ⚠️ API 키를 `index.html`이나 저장소에 **절대 직접 적지 마세요.** 공개 저장소에 올라간 키는 자동 수집되어 도용됩니다.
-> 키는 각 사용자의 브라우저에만 저장되며, 원하면 [Google Cloud Console → API 및 서비스 → 사용자 인증 정보]에서 해당 키의 "웹사이트 제한"에 `https://<내아이디>.github.io/*`를 추가해 더 안전하게 쓸 수 있습니다.
+### 2. Vercel에 배포하기
+1. https://vercel.com 에서 **Continue with GitHub**로 로그인
+2. **Add New… → Project** → 방금 만든 저장소 **Import**
+3. **Environment Variables** 펼치기
+   - Key: `GEMINI_API_KEY` / Value: 내 Gemini API 키 → **Add**
+4. **Deploy** → 완료되면 `https://프로젝트이름.vercel.app` 주소가 생깁니다.
 
-## 로컬에서 실행
+이후 GitHub에서 파일을 고치면 Vercel이 자동으로 다시 배포합니다.
 
-`index.html`을 브라우저로 바로 열어도 동작합니다.
-(`localStorage`가 막히는 환경이면 `python3 -m http.server` 후 `http://localhost:8000` 접속)
+> 키를 나중에 추가/변경했다면: Vercel 프로젝트 **Settings → Environment Variables**에서 수정 후
+> **Deployments** 탭 → 최신 배포 오른쪽 `⋯` → **Redeploy** 해야 반영됩니다.
 
-## 동작 방식
-
-1. **지역 → 좌표**: Open-Meteo Geocoding에서 한국(KR) 결과 검색. "서울 노원구"처럼 입력해도 마지막 단어·접미사(역/동/구)를 떼어 재검색합니다.
-2. **날씨 요약**: 어제·오늘 08~21시 기준 최저/최고 기온, 평균 체감기온, 최대 강수확률, 강수량, 비/눈 시간대, ΔT(오늘−어제 체감) 계산.
-3. **Gemini 추론**: 체감 보정 매트릭스 + 강수 시 방수 우선 규칙을 systemInstruction으로 전달하고, `responseSchema`로 정형 JSON을 받아 카드에 표시합니다.
-   비 판정(강수확률 ≥ 40% 또는 강수량 ≥ 0.5mm)은 앱이 직접 계산하므로 AI 응답과 관계없이 비 배너가 정확히 뜹니다.
+## 알아둘 점
+- **사용량 한도:** 모든 방문자가 키 하나의 한도를 나눠 씁니다. 무료 등급은 분당/일일 요청 수 제한이 있어, 사람이 많으면 "한도" 안내가 뜰 수 있습니다.
+- **결제 연결 시 주의:** Google 계정에 결제를 연결했다면 사용량만큼 과금될 수 있으니 예산 알림을 설정해 두세요.
+- **보안:** Gemini 키를 `index.html`이나 GitHub에 절대 적지 마세요. Vercel 환경변수에만 넣으면 됩니다.
