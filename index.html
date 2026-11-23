@@ -322,7 +322,7 @@ function geminiErrorMessage(status, apiMsg = '') {
   if (m.includes('upstream fetch failed')) return 'Vercel 서버가 Gemini에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.';
   if (status === 403) return `[설정 필요] Gemini 접근이 거부됐어요: ${apiMsg}`;
   if (status === 429) return 'AI 사용 한도에 걸렸어요. 1분 정도 뒤에 다시 시도해 주세요. (무료 등급은 분당/일일 요청 수 제한이 있어요)';
-  if (status === 503) return 'Gemini 서버가 일시적으로 혼잡해요. 잠시 후 다시 시도해 주세요.';
+  if (status === 503 || status === 504) return 'Gemini 모델들이 모두 응답하지 않았어요. 잠시 후 다시 시도해 주세요. (관리자: /api/gemini 주소에서 상태 확인)';
   if (status === 404 && apiMsg) return `[설정 필요] Gemini 모델을 찾을 수 없어요: ${apiMsg}`;
   if (status === 404) return '[설정 필요] /api/gemini를 찾지 못했어요. vercel.app 주소로 접속했는지, api 폴더 안에 gemini.js가 있는지 확인해 주세요.';
   return `AI 추천 중 오류가 발생했어요 (코드 ${status}${apiMsg ? ': ' + apiMsg : ''}).`;
@@ -336,14 +336,13 @@ async function askGemini(payload) {
     generationConfig: {
       responseMimeType: 'application/json',
       responseSchema: RESPONSE_SCHEMA,
-      thinkingConfig: { thinkingLevel: 'low' }, // 깊은 추론 생략 → 응답 속도 향상
     },
   };
   let res, data;
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), 60000); // 60초 제한
+      const timer = setTimeout(() => ctrl.abort(), 90000); // 90초 제한 (서버가 모델을 바꿔가며 시도)
       try {
         res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: ctrl.signal });
       } finally { clearTimeout(timer); }
@@ -352,8 +351,7 @@ async function askGemini(payload) {
       throw new UserError('AI 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.');
     }
     data = await res.json().catch(() => ({}));
-    if (res.status !== 503 || attempt === 1) break;
-    await new Promise(r => setTimeout(r, 1500)); // 혼잡(503)이면 한 번 자동 재시도
+    break; // 재시도는 서버(api/gemini.js)가 모델을 바꿔가며 처리
   }
   if (!res.ok) {
     console.warn('Gemini error', res.status, data?.error?.message);
