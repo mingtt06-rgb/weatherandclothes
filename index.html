@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>어제 체감 기반 오늘의 OOTD 추천기</title>
+  <meta name="description" content="어제 입은 옷과 체감, 오늘 동네 날씨를 비교해 오늘의 코디를 추천합니다." />
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+  <style>
+    body { font-family: "Pretendard", -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif; }
+    .chip { transition: all .15s ease; }
+    .chip[aria-pressed="true"] { background:#4f46e5; color:#fff; border-color:#4f46e5; box-shadow:0 2px 6px rgba(79,70,229,.25); }
+    .fade-in { animation: fadeIn .4s ease both; }
+    @keyframes fadeIn { from { opacity:0; transform: translateY(8px);} to { opacity:1; transform:none; } }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 min-h-screen">
+  <main class="max-w-xl mx-auto px-4 py-6 space-y-5">
+
+    <!-- 헤더 -->
+    <header class="text-center pt-2">
+      <h1 class="text-2xl font-extrabold tracking-tight">오늘 뭐 입지? 👕</h1>
+      <p class="text-sm text-slate-500 mt-1">어제 입은 옷 + 어제 체감 + 오늘 동네 날씨로 코디를 추천해요</p>
+    </header>
+
+    <!-- 3.1 API Key 설정 바 -->
+    <section id="keySection" class="bg-white rounded-2xl border-2 border-slate-200 shadow-sm transition-colors">
+      <button id="keyToggle" type="button" class="w-full flex items-center justify-between px-4 py-3">
+        <span class="flex items-center gap-2 font-semibold">
+          <i data-lucide="key-round" class="w-4 h-4"></i> Gemini API 키
+        </span>
+        <span class="flex items-center gap-2">
+          <span id="keyBadge" class="hidden text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full px-2 py-0.5">✅ Gemini API 키 연결됨</span>
+          <i id="keyChevron" data-lucide="chevron-down" class="w-4 h-4 transition-transform"></i>
+        </span>
+      </button>
+      <div id="keyBody" class="px-4 pb-4 space-y-2">
+        <div class="flex gap-2">
+          <input id="keyInput" type="password" autocomplete="off" placeholder="AIza... 로 시작하는 키를 붙여넣으세요"
+                 class="flex-1 min-w-0 rounded-xl border border-slate-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+          <button id="keySave" type="button" class="rounded-xl bg-slate-900 text-white text-sm font-semibold px-4">저장</button>
+        </div>
+        <div class="flex items-center justify-between text-xs text-slate-500">
+          <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener" class="underline">Google AI Studio에서 키 발급받기</a>
+          <button id="keyDelete" type="button" class="hidden text-red-500 underline">키 삭제</button>
+        </div>
+        <p class="text-xs text-slate-400">키는 이 브라우저(localStorage)에만 저장되고 Google 외의 서버로 전송되지 않아요.</p>
+      </div>
+    </section>
+
+    <!-- 3.2 입력 폼 -->
+    <section class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 space-y-5">
+      <div>
+        <h2 class="font-bold mb-1">어제 입은 상의 <span class="text-xs font-normal text-slate-400">(여러 개 선택 가능)</span></h2>
+        <div id="grpTop" class="flex flex-wrap gap-2" data-multi="true"></div>
+      </div>
+      <div>
+        <h2 class="font-bold mb-1">어제 입은 외투</h2>
+        <div id="grpOuter" class="flex flex-wrap gap-2"></div>
+      </div>
+      <div>
+        <h2 class="font-bold mb-1">어제 입은 하의</h2>
+        <div id="grpBottom" class="flex flex-wrap gap-2"></div>
+      </div>
+      <div>
+        <h2 class="font-bold mb-1">어제 밖에서 느낀 체감 <span class="text-red-500">*</span></h2>
+        <div id="grpFeel" class="flex flex-wrap gap-2"></div>
+      </div>
+      <div>
+        <h2 class="font-bold mb-1">오늘 출근/외출할 동네 <span class="text-red-500">*</span></h2>
+        <input id="locInput" type="text" placeholder="예: 노원구, 강남역, 여의도"
+               class="w-full rounded-xl border border-slate-300 px-3 py-2 focus:outline-none focus:ring-2 focus:ring-indigo-400" />
+        <div id="recentLocs" class="flex flex-wrap gap-2 mt-2"></div>
+      </div>
+
+      <p id="formError" class="hidden text-sm text-red-600 bg-red-50 border border-red-200 rounded-xl px-3 py-2"></p>
+
+      <button id="submitBtn" type="button"
+              class="w-full flex items-center justify-center gap-2 rounded-2xl bg-indigo-600 hover:bg-indigo-700 disabled:bg-indigo-300 text-white font-bold py-3.5 transition-colors">
+        <i data-lucide="sparkles" class="w-5 h-5"></i> 오늘의 코디 추천받기
+      </button>
+      <div id="loading" class="hidden flex items-center justify-center gap-2 text-sm text-indigo-600">
+        <svg class="animate-spin w-4 h-4" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" opacity=".25"/><path d="M22 12a10 10 0 0 1-10 10" stroke="currentColor" stroke-width="3" stroke-linecap="round"/></svg>
+        <span id="loadingText">동네 날씨 데이터를 불러오는 중...</span>
+      </div>
+    </section>
+
+    <!-- 5. 결과 -->
+    <section id="result" class="hidden space-y-4"></section>
+
+    <footer class="text-center text-xs text-slate-400 pb-6">
+      날씨: <a class="underline" href="https://open-meteo.com/" target="_blank" rel="noopener">Open-Meteo</a> · AI: Google Gemini
+    </footer>
+  </main>
+
+<script>
+/* =========================
+   상수 / 상태
+========================= */
+const LS_KEY = 'ootd_gemini_key';
+const LS_RECENT = 'ootd_recent_locs';
+const GEMINI_MODEL = 'gemini-2.5-flash';
+const DAY_START = 8, DAY_END = 21; // 외출 주 활동 시간대
+
+const OPTIONS = {
+  top: ['반팔', '긴팔 티셔츠', '셔츠/블라우스', '사계절 맨투맨', '기모 맨투맨', '얇은 니트', '두꺼운 니트', '후드티'],
+  outer: ['외투 안 입음', '가디건', '바람막이', '자켓/블레이저', '트렌치코트', '경량패딩', '코트', '두꺼운 패딩'],
+  bottom: ['여름용 바지(린넨/얇은 면)', '간절기 바지(청바지/슬랙스)', '겨울용 바지(모직/코듀로이)', '기모 바지', '방수 바지', '치마/원피스'],
+  feel: ['🥶 많이 추웠음', '😨 살짝 추웠음', '😊 딱 좋았음', '😅 살짝 더웠음', '🥵 많이 더웠음'],
+};
+
+const state = { top: new Set(), outer: null, bottom: null, feel: null, custom: { top: '', outer: '', bottom: '' } };
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const ls = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+/* =========================
+   칩 UI
+========================= */
+const chipCls = 'chip text-sm border border-slate-300 bg-white rounded-full px-3 py-1.5 hover:border-indigo-400';
+
+function buildGroup(containerId, key, multi, allowCustom = true) {
+  const box = $(containerId);
+  OPTIONS[key].forEach(label => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = chipCls; b.textContent = label; b.setAttribute('aria-pressed', 'false');
+    b.addEventListener('click', () => {
+      if (multi) {
+        state[key].has(label) ? state[key].delete(label) : state[key].add(label);
+      } else {
+        state[key] = state[key] === label ? null : label;
+        if (allowCustom && state[key]) { state.custom[key] = ''; const ci = box.querySelector('input'); if (ci) ci.value = ''; }
+      }
+      refreshGroup(box, key, multi);
+      if (key === 'feel') hideError();
+    });
+    box.appendChild(b);
+  });
+  if (!allowCustom) return;
+
+  // 직접 입력
+  const toggle = document.createElement('button');
+  toggle.type = 'button'; toggle.className = chipCls + ' border-dashed text-slate-500'; toggle.textContent = '✏️ 직접 입력';
+  const input = document.createElement('input');
+  input.type = 'text'; input.placeholder = multi ? '예: 히트텍 이너 (쉼표로 여러 개)' : '예: 플리스 자켓';
+  input.className = 'hidden w-full mt-1 rounded-xl border border-slate-300 px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400';
+  toggle.addEventListener('click', () => { input.classList.toggle('hidden'); if (!input.classList.contains('hidden')) input.focus(); });
+  input.addEventListener('input', () => {
+    state.custom[key] = input.value.trim();
+    if (!multi && state.custom[key]) { state[key] = null; refreshGroup(box, key, multi); }
+  });
+  box.appendChild(toggle); box.appendChild(input);
+}
+
+function refreshGroup(box, key, multi) {
+  box.querySelectorAll('button.chip').forEach(b => {
+    if (b.textContent === '✏️ 직접 입력') return;
+    const on = multi ? state[key].has(b.textContent) : state[key] === b.textContent;
+    b.setAttribute('aria-pressed', String(on));
+  });
+}
+
+/* =========================
+   API Key 영역
+========================= */
+function setKeyOpen(open) {
+  $('keyBody').classList.toggle('hidden', !open);
+  $('keyChevron').style.transform = open ? 'rotate(180deg)' : '';
+}
+function renderKeyState() {
+  const has = !!ls.get(LS_KEY);
+  $('keyBadge').classList.toggle('hidden', !has);
+  $('keyDelete').classList.toggle('hidden', !has);
+  $('keyInput').placeholder = has ? '저장된 키가 있어요 (변경하려면 새 키 입력)' : 'AIza... 로 시작하는 키를 붙여넣으세요';
+  setKeyOpen(!has);
+}
+$('keyToggle').addEventListener('click', () => setKeyOpen($('keyBody').classList.contains('hidden')));
+$('keySave').addEventListener('click', () => {
+  const v = $('keyInput').value.trim();
+  if (!v) { $('keyInput').focus(); return; }
+  ls.set(LS_KEY, v); $('keyInput').value = '';
+  $('keySection').classList.remove('border-red-500');
+  renderKeyState();
+});
+$('keyInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('keySave').click(); });
+$('keyDelete').addEventListener('click', () => { ls.del(LS_KEY); renderKeyState(); });
+
+/* =========================
+   최근 동네
+========================= */
+function getRecent() { try { return JSON.parse(ls.get(LS_RECENT)) || []; } catch { return []; } }
+function pushRecent(name) {
+  const list = [name, ...getRecent().filter(x => x !== name)].slice(0, 3);
+  ls.set(LS_RECENT, JSON.stringify(list)); renderRecent();
+}
+function renderRecent() {
+  const box = $('recentLocs'); box.innerHTML = '';
+  getRecent().forEach(n => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'text-xs bg-slate-100 hover:bg-indigo-50 text-slate-600 rounded-full px-3 py-1 flex items-center gap-1';
+    b.innerHTML = `<i data-lucide="history" class="w-3 h-3"></i>${esc(n)}`;
+    b.addEventListener('click', () => { $('locInput').value = n; hideError(); });
+    box.appendChild(b);
+  });
+  lucide.createIcons();
+}
+
+/* =========================
+   오류 / 로딩
+========================= */
+class UserError extends Error {}
+function showError(msg) { const e = $('formError'); e.textContent = msg; e.classList.remove('hidden'); }
+function hideError() { $('formError').classList.add('hidden'); }
+function setLoading(text) {
+  const on = !!text;
+  $('loading').classList.toggle('hidden', !on);
+  $('loading').classList.toggle('flex', on);
+  $('submitBtn').disabled = on;
+  if (on) $('loadingText').textContent = text;
+}
+
+/* =========================
+   Step 1. Geocoding
+========================= */
+function geoCandidates(raw) {
+  const q = raw.trim().replace(/\s+/g, ' ');
+  const set = new Set([q]);
+  const tokens = q.split(' ');
+  if (tokens.length > 1) set.add(tokens[tokens.length - 1]);        // "서울 노원구" → "노원구"
+  [...set].forEach(t => {
+    const stripped = t.replace(/(역|동|구|시|군|읍|면)$/, '');
+    if (stripped.length >= 2 && stripped !== t) set.add(stripped);   // "강남역" → "강남"
+  });
+  return [...set];
+}
+
+async function geocode(raw) {
+  for (const q of geoCandidates(raw)) {
+    const url = `https://geocoding-api.open-meteo.com/v1/search?name=${encodeURIComponent(q)}&count=5&language=ko&format=json`;
+    const res = await fetch(url);
+    if (!res.ok) throw new UserError('지역 검색 서버에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.');
+    const data = await res.json();
+    const kr = (data.results || []).filter(r => r.country_code === 'KR');
+    if (kr.length) {
+      const r = kr[0];
+      const label = [r.admin1, r.name].filter((v, i, a) => v && a.indexOf(v) === i).join(' ');
+      return { lat: r.latitude, lon: r.longitude, name: r.name, label };
+    }
+  }
+  throw new UserError("동네 이름 대신 '구' 또는 '시' 단위로 입력해 주세요 (예: 서울 노원구)");
+}
+
+/* =========================
+   Step 2. Weather
+========================= */
+async function fetchWeather(lat, lon) {
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}` +
+    `&hourly=temperature_2m,apparent_temperature,precipitation_probability,precipitation,snowfall` +
+    `&past_days=1&forecast_days=1&timezone=Asia%2FSeoul`;
+  const res = await fetch(url);
+  if (!res.ok) throw new UserError('날씨 데이터를 불러오지 못했어요. 잠시 후 다시 시도해 주세요.');
+  return res.json();
+}
+
+const round1 = (n) => Math.round(n * 10) / 10;
+
+function summarizeDay(h, date) {
+  const idx = [];
+  h.time.forEach((t, i) => {
+    if (!t.startsWith(date)) return;
+    const hour = Number(t.slice(11, 13));
+    if (hour >= DAY_START && hour <= DAY_END) idx.push(i);
+  });
+  const pick = (arr) => idx.map(i => arr?.[i]).filter(v => v !== null && v !== undefined);
+  const temps = pick(h.temperature_2m), app = pick(h.apparent_temperature);
+  const pp = pick(h.precipitation_probability), pr = pick(h.precipitation), sn = pick(h.snowfall);
+
+  const wetHours = idx.filter(i => (h.precipitation?.[i] ?? 0) >= 0.1 || (h.precipitation_probability?.[i] ?? 0) >= 40)
+                      .map(i => Number(h.time[i].slice(11, 13)));
+  return {
+    date,
+    minTemp: round1(Math.min(...temps)),
+    maxTemp: round1(Math.max(...temps)),
+    avgApparent: round1(app.reduce((a, b) => a + b, 0) / (app.length || 1)),
+    maxPrecipProb: pp.length ? Math.max(...pp) : 0,
+    totalPrecip: round1(pr.reduce((a, b) => a + b, 0)),
+    totalSnow: round1(sn.reduce((a, b) => a + b, 0)),
+    wetPeriods: toRanges(wetHours),
+  };
+}
+
+function toRanges(hours) {
+  if (!hours.length) return [];
+  const out = []; let s = hours[0], p = hours[0];
+  for (let i = 1; i <= hours.length; i++) {
+    if (hours[i] === p + 1) { p = hours[i]; continue; }
+    out.push(s === p ? `${s}시` : `${s}시~${p + 1}시`);
+    s = p = hours[i];
+  }
+  return out;
+}
+
+function buildWeatherSummary(w) {
+  const dates = [...new Set(w.hourly.time.map(t => t.slice(0, 10)))].sort();
+  const yesterday = summarizeDay(w.hourly, dates[0]);
+  const today = summarizeDay(w.hourly, dates[dates.length - 1]);
+  const deltaT = round1(today.avgApparent - yesterday.avgApparent);
+  const isRainy = today.maxPrecipProb >= 40 || today.totalPrecip >= 0.5;
+  const isSnowy = today.totalSnow > 0;
+  return {
+    yesterday: { ...yesterday, hadPrecip: yesterday.totalPrecip > 0 },
+    today, deltaT, isRainy, isSnowy,
+  };
+}
+
+/* =========================
+   Step 3. Gemini
+========================= */
+const SYSTEM_INSTRUCTION = `너는 한국 날씨와 옷차림에 밝은 퍼스널 코디네이터야.
+사용자의 "어제 옷차림 + 어제 체감 피드백"과 "어제 vs 오늘(08~21시) 기상 요약"을 비교해 오늘 입을 상의·외투·하의를 하나씩 구체적으로 추천해.
+
+[체감 온도 보정 매트릭스] (ΔT = 오늘 평균 체감기온 - 어제 평균 체감기온)
+1. 어제 '딱 좋았음' + |ΔT| ≤ 2°C → 어제와 비슷한 보온성 유지.
+   ΔT가 -2보다 낮으면 그만큼 보온성 상향, +2보다 높으면 경량화.
+2. 어제 '살짝/많이 추웠음' + ΔT ≤ 2°C(동일하거나 낮음) → 상의 두께 상향(예: 사계절 맨투맨 → 기모 맨투맨/두꺼운 니트) 및 외투 보온성 강화. '많이 추웠음'이면 한 단계 더 강하게.
+   어제 추웠는데 오늘 많이 따뜻해졌다면(ΔT > 2) 어제 수준 또는 약간만 조정.
+3. 어제 '살짝/많이 더웠음' + ΔT ≥ -2°C(동일하거나 높음) → 얇은 이너로 교체 또는 외투 경량화. '많이 더웠음'이면 한 단계 더 가볍게.
+   어제 더웠는데 오늘 많이 추워졌다면(ΔT < -2) 어제 수준 유지 또는 약간만 조정.
+4. 일교차(오늘 최고-최저)가 8°C 이상이면 벗고 입기 쉬운 레이어드를 팁에 포함.
+
+[강수(비/눈) 최우선 방수 규칙] — isRainy가 true일 때 반드시 적용
+- 하의: 방수 바지 또는 어두운 색상의 젖어도 티가 덜 나고 빨리 마르는 바지를 최우선 추천. 치마/원피스, 밝은 면바지, 린넨은 피함.
+- 외투: 방수 기능이 있는 바람막이/후드 아우터를 우선 고려. 단, 기온이 낮으면 방수 겉감 패딩 등 보온과 방수를 함께 고려.
+- 팁에 우산 챙기기와 비 오는 시간대를 포함.
+- 응답의 isRainy를 true로 설정.
+
+[설명 화법]
+- 아이템만 나열하지 말고, 사용자의 어제 입력값을 대괄호로 직접 인용해 비교하며 설득력 있게 설명.
+  예: "어제 입으신 [사계절 맨투맨]보다 보온성이 높은 [기모 맨투맨]을 추천해요"
+- 어제 해당 항목을 입력하지 않았다면 오늘 기온 기준으로 설명.
+- 각 reason은 1~2문장, 친근한 존댓말(~해요체). item은 짧은 아이템명(예: "기모 맨투맨 + 얇은 히트텍 이너").
+- 외투 reason에는 기온/바람, 하의 reason에는 보온/방수 관점을 반영.
+- tips는 2~4개: 레이어드 방법, 우산·목도리·장갑·핫팩 등 소품.
+- headline은 오늘 날씨와 코디 방향을 한 문장으로 요약.`;
+
+const RESPONSE_SCHEMA = {
+  type: 'OBJECT',
+  properties: {
+    headline: { type: 'STRING' },
+    isRainy: { type: 'BOOLEAN' },
+    top: { type: 'OBJECT', properties: { item: { type: 'STRING' }, reason: { type: 'STRING' } }, required: ['item', 'reason'] },
+    outer: { type: 'OBJECT', properties: { item: { type: 'STRING' }, reason: { type: 'STRING' } }, required: ['item', 'reason'] },
+    bottom: { type: 'OBJECT', properties: { item: { type: 'STRING' }, reason: { type: 'STRING' } }, required: ['item', 'reason'] },
+    tips: { type: 'ARRAY', items: { type: 'STRING' } },
+  },
+  required: ['headline', 'isRainy', 'top', 'outer', 'bottom', 'tips'],
+  propertyOrdering: ['headline', 'isRainy', 'top', 'outer', 'bottom', 'tips'],
+};
+
+function geminiErrorMessage(status, apiMsg = '') {
+  const m = apiMsg.toLowerCase();
+  if (status === 400 && (m.includes('api key') || m.includes('api_key'))) return 'API 키가 올바르지 않아요. Google AI Studio에서 발급받은 키를 다시 확인해 주세요.';
+  if (status === 400) return '요청 형식에 문제가 있어요. 잠시 후 다시 시도해 주세요.';
+  if (status === 401 || status === 403) return 'API 키 권한이 없어요. 키가 유효한지, 사용 제한(허용 웹사이트 등) 설정이 이 주소를 허용하는지 확인해 주세요.';
+  if (status === 404) return 'Gemini 모델을 찾을 수 없어요. 잠시 후 다시 시도해 주세요.';
+  if (status === 429) return 'Gemini API 사용 한도를 초과했어요. 1분 정도 기다렸다가 다시 시도해 주세요. (무료 등급은 분당/일일 요청 수 제한이 있어요)';
+  if (status >= 500) return 'Gemini 서버가 일시적으로 혼잡해요. 잠시 후 다시 시도해 주세요.';
+  return `AI 추천 중 오류가 발생했어요 (코드 ${status}).`;
+}
+
+async function askGemini(apiKey, payload) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${encodeURIComponent(apiKey)}`;
+  const body = {
+    systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
+    contents: [{ role: 'user', parts: [{ text: '아래 데이터를 바탕으로 오늘의 코디를 추천해 줘.\n' + JSON.stringify(payload, null, 2) }] }],
+    generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0.6 },
+  };
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  } catch {
+    throw new UserError('Gemini 서버에 연결하지 못했어요. 인터넷 연결을 확인해 주세요.');
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const err = new UserError(geminiErrorMessage(res.status, data?.error?.message));
+    err.status = res.status; throw err;
+  }
+  const text = data?.candidates?.[0]?.content?.parts?.map(p => p.text || '').join('') || '';
+  try { return JSON.parse(text); }
+  catch { throw new UserError('AI 응답을 해석하지 못했어요. 다시 한 번 시도해 주세요.'); }
+}
+
+/* =========================
+   결과 렌더링
+========================= */
+function deltaBadge(d) {
+  if (Math.abs(d) < 1) return `<span class="bg-slate-100 text-slate-700 rounded-full px-2.5 py-1">어제와 비슷 ➖</span>`;
+  return d < 0
+    ? `<span class="bg-sky-100 text-sky-800 rounded-full px-2.5 py-1">어제보다 ${Math.abs(d)}°C 낮음 📉</span>`
+    : `<span class="bg-orange-100 text-orange-800 rounded-full px-2.5 py-1">어제보다 ${d}°C 높음 📈</span>`;
+}
+
+function renderResult(loc, ws, ai) {
+  const t = ws.today, y = ws.yesterday;
+  const rainy = ws.isRainy || ai.isRainy === true;
+  const rainWord = ws.isSnowy ? '눈/비' : '비';
+  const card = (emoji, title, obj) => `
+    <div class="flex gap-3 p-4">
+      <div class="text-3xl leading-none">${emoji}</div>
+      <div class="min-w-0">
+        <p class="text-xs font-semibold text-slate-400">${title}</p>
+        <p class="font-extrabold text-lg">${esc(obj?.item)}</p>
+        <p class="text-sm text-slate-600 mt-0.5">${esc(obj?.reason)}</p>
+      </div>
+    </div>`;
+
+  $('result').innerHTML = `
+    <!-- 날씨 비교 헤더 -->
+    <div class="fade-in bg-gradient-to-br from-indigo-600 to-violet-600 text-white rounded-2xl p-5 shadow">
+      <div class="flex items-center gap-1.5 text-indigo-100 text-sm"><i data-lucide="map-pin" class="w-4 h-4"></i>${esc(loc.label)}</div>
+      <div class="flex items-end gap-3 mt-1">
+        <p class="text-3xl font-extrabold">${t.minTemp}° / ${t.maxTemp}°</p>
+        <p class="text-sm text-indigo-100 pb-1">체감 평균 ${t.avgApparent}°</p>
+      </div>
+      <p class="text-xs text-indigo-200 mt-1">어제(08~21시) ${y.minTemp}° / ${y.maxTemp}° · 체감 평균 ${y.avgApparent}°${y.hadPrecip ? ' · 강수 있었음' : ''}</p>
+      <div class="flex flex-wrap gap-2 mt-3 text-xs font-semibold">
+        ${deltaBadge(ws.deltaT)}
+        <span class="bg-white/90 text-slate-800 rounded-full px-2.5 py-1">강수확률 ${t.maxPrecipProb}% ${t.maxPrecipProb >= 40 ? '☔' : '🌤️'}</span>
+        ${t.totalPrecip > 0 ? `<span class="bg-white/90 text-slate-800 rounded-full px-2.5 py-1">예상 강수량 ${t.totalPrecip}mm</span>` : ''}
+      </div>
+      ${ai.headline ? `<p class="mt-3 text-sm">${esc(ai.headline)}</p>` : ''}
+    </div>
+
+    ${rainy ? `
+    <!-- 비/방수 주의 배너 -->
+    <div class="fade-in bg-blue-50 border-2 border-blue-400 text-blue-900 rounded-2xl p-4 flex gap-3">
+      <i data-lucide="umbrella" class="w-6 h-6 shrink-0 text-blue-600"></i>
+      <div>
+        <p class="font-bold">☔ ${rainWord} 예보 알림</p>
+        <p class="text-sm">${rainWord}가 오니 방수 바지나 방수 아우터를 착용하고 우산을 꼭 챙기세요!</p>
+        ${t.wetPeriods.length ? `<p class="text-xs mt-1 text-blue-700">예상 시간대: ${t.wetPeriods.join(', ')}</p>` : ''}
+      </div>
+    </div>` : ''}
+
+    <!-- 추천 OOTD -->
+    <div class="fade-in bg-white rounded-2xl border border-slate-200 shadow-sm divide-y divide-slate-100">
+      <h3 class="px-4 pt-4 pb-2 font-bold flex items-center gap-2"><i data-lucide="shirt" class="w-4 h-4"></i>오늘의 추천 OOTD</h3>
+      ${card('👕', '추천 상의', ai.top)}
+      ${card('🧥', '추천 외투', ai.outer)}
+      ${card('👖', '추천 하의', ai.bottom)}
+    </div>
+
+    <!-- 팁 -->
+    ${Array.isArray(ai.tips) && ai.tips.length ? `
+    <div class="fade-in bg-amber-50 border border-amber-200 rounded-2xl p-4">
+      <h3 class="font-bold flex items-center gap-2 mb-2"><i data-lucide="lightbulb" class="w-4 h-4 text-amber-600"></i>추가 코디 & 소품 팁</h3>
+      <ul class="space-y-1.5 text-sm">${ai.tips.map(x => `<li class="flex gap-2"><span>•</span><span>${esc(x)}</span></li>`).join('')}</ul>
+    </div>` : ''}
+  `;
+  $('result').classList.remove('hidden');
+  lucide.createIcons();
+  $('result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/* =========================
+   메인 플로우
+========================= */
+function collectOutfit() {
+  const splitCustom = (s) => s.split(',').map(x => x.trim()).filter(Boolean);
+  const top = [...state.top, ...splitCustom(state.custom.top)];
+  return {
+    상의: top.length ? top.join(' + ') : '미입력',
+    외투: state.custom.outer || state.outer || '미입력',
+    하의: state.custom.bottom || state.bottom || '미입력',
+  };
+}
+
+$('submitBtn').addEventListener('click', async () => {
+  hideError();
+  const apiKey = ls.get(LS_KEY);
+  if (!apiKey) {
+    setKeyOpen(true);
+    $('keySection').classList.add('border-red-500');
+    $('keySection').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => $('keyInput').focus(), 300);
+    showError('먼저 Gemini API 키를 입력하고 저장해 주세요.');
+    return;
+  }
+  if (!state.feel) { showError('어제 밖에서 느낀 체감을 선택해 주세요.'); return; }
+  const locRaw = $('locInput').value.trim();
+  if (!locRaw) { showError('오늘 출근/외출할 동네를 입력해 주세요.'); $('locInput').focus(); return; }
+
+  try {
+    setLoading('동네 날씨 데이터를 불러오는 중...');
+    const loc = await geocode(locRaw);
+    const weather = await fetchWeather(loc.lat, loc.lon);
+    const ws = buildWeatherSummary(weather);
+    pushRecent(locRaw);
+
+    setLoading('어제 옷차림과 비교하여 코디를 짜는 중...');
+    const payload = {
+      지역: loc.label,
+      어제_입은_옷: collectOutfit(),
+      어제_체감_피드백: state.feel.replace(/^\S+\s/, ''),
+      기상_요약_기준: `외출 시간대 ${DAY_START}:00~${DAY_END}:00`,
+      어제_날씨: {
+        최저기온: ws.yesterday.minTemp, 최고기온: ws.yesterday.maxTemp,
+        평균체감기온: ws.yesterday.avgApparent, 강수여부: ws.yesterday.hadPrecip,
+      },
+      오늘_날씨: {
+        최저기온: ws.today.minTemp, 최고기온: ws.today.maxTemp, 평균체감기온: ws.today.avgApparent,
+        최대강수확률_퍼센트: ws.today.maxPrecipProb, 총예상강수량_mm: ws.today.totalPrecip,
+        적설_cm: ws.today.totalSnow, 비눈_예보_시간대: ws.today.wetPeriods.length ? ws.today.wetPeriods : '없음',
+      },
+      기온변화량_deltaT: ws.deltaT,
+      isRainy: ws.isRainy,
+    };
+    const ai = await askGemini(apiKey, payload);
+    renderResult(loc, ws, ai);
+  } catch (e) {
+    console.error(e);
+    showError(e instanceof UserError ? e.message : '알 수 없는 오류가 발생했어요. 잠시 후 다시 시도해 주세요.');
+    if (e.status === 400 || e.status === 401 || e.status === 403) { setKeyOpen(true); $('keySection').classList.add('border-red-500'); }
+  } finally {
+    setLoading(null);
+  }
+});
+$('locInput').addEventListener('keydown', e => { if (e.key === 'Enter') $('submitBtn').click(); });
+
+/* =========================
+   초기화
+========================= */
+buildGroup('grpTop', 'top', true);
+buildGroup('grpOuter', 'outer', false);
+buildGroup('grpBottom', 'bottom', false);
+buildGroup('grpFeel', 'feel', false, false);
+renderKeyState();
+renderRecent();
+lucide.createIcons();
+</script>
+</body>
+</html>
