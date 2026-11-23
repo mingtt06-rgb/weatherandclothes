@@ -323,6 +323,7 @@ function geminiErrorMessage(status, apiMsg = '') {
   if (status === 403) return `[설정 필요] Gemini 접근이 거부됐어요: ${apiMsg}`;
   if (status === 429) return 'AI 사용 한도에 걸렸어요. 1분 정도 뒤에 다시 시도해 주세요. (무료 등급은 분당/일일 요청 수 제한이 있어요)';
   if (status === 503) return 'Gemini 서버가 일시적으로 혼잡해요. 잠시 후 다시 시도해 주세요.';
+  if (status === 404 && apiMsg) return `[설정 필요] Gemini 모델을 찾을 수 없어요: ${apiMsg}`;
   if (status === 404) return '[설정 필요] /api/gemini를 찾지 못했어요. vercel.app 주소로 접속했는지, api 폴더 안에 gemini.js가 있는지 확인해 주세요.';
   return `AI 추천 중 오류가 발생했어요 (코드 ${status}${apiMsg ? ': ' + apiMsg : ''}).`;
 }
@@ -332,7 +333,7 @@ async function askGemini(payload) {
   const body = {
     systemInstruction: { parts: [{ text: SYSTEM_INSTRUCTION }] },
     contents: [{ role: 'user', parts: [{ text: '아래 데이터를 바탕으로 오늘의 코디를 추천해 줘.\n' + JSON.stringify(payload, null, 2) }] }],
-    generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA, temperature: 0.6 },
+    generationConfig: { responseMimeType: 'application/json', responseSchema: RESPONSE_SCHEMA },
   };
   let res, data;
   for (let attempt = 0; attempt < 2; attempt++) {
